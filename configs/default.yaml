@@ -1,0 +1,18 @@
+# Default pipeline configuration. Override with: taxidemand --config path/to/other.yaml <command>
+
+data:
+  root: data                       # raw/bronze/silver/gold live under this directory
+  services: [yellow, green, fhvhv] # TLC trip-record datasets to ingest
+  start_month: "2023-01"
+  end_month: "2024-12"
+
+forecast:
+  freq: "1h"
+  horizons: [1, 3, 6, 12, 24]      # hours ahead
+  min_zone_trips: 500              # zones with fewer trips in the period are pooled out
+
+tracking:
+  mlflow_uri: mlruns
+  experiment: nyc-taxi-demand
+
+seed: 42
