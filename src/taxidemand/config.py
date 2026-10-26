@@ -51,6 +51,23 @@ class DataConfig(_Strict):
         return self.root / name
 
 
+class IngestConfig(_Strict):
+    """How raw TLC files are fetched."""
+
+    base_url: str = "https://d37ci6vzurychx.cloudfront.net"
+    timeout_s: float = Field(60.0, gt=0)
+    max_retries: int = Field(4, ge=0, le=10)
+    backoff_s: float = Field(1.0, ge=0)
+    workers: int = Field(4, ge=1, le=16)
+
+    @field_validator("base_url")
+    @classmethod
+    def _strip_slash(cls, v: str) -> str:
+        if not v.startswith(("https://", "http://")):
+            raise ValueError("base_url must be an http(s) URL")
+        return v.rstrip("/")
+
+
 class ForecastConfig(_Strict):
     freq: str = "1h"
     horizons: list[int] = Field(default_factory=lambda: [1, 6, 24], min_length=1)
@@ -71,6 +88,7 @@ class TrackingConfig(_Strict):
 
 class Settings(_Strict):
     data: DataConfig
+    ingest: IngestConfig = IngestConfig()
     forecast: ForecastConfig = ForecastConfig()
     tracking: TrackingConfig = TrackingConfig()
     seed: int = 42

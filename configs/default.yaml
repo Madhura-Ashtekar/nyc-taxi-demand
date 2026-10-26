@@ -6,6 +6,13 @@ data:
   start_month: "2023-01"
   end_month: "2024-12"
 
+ingest:
+  base_url: https://d37ci6vzurychx.cloudfront.net  # official TLC distribution
+  timeout_s: 60
+  max_retries: 4                   # exponential backoff: 1s, 2s, 4s, 8s
+  backoff_s: 1.0
+  workers: 4                       # parallel downloads
+
 forecast:
   freq: "1h"
   horizons: [1, 3, 6, 12, 24]      # hours ahead
