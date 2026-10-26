@@ -35,12 +35,38 @@ make check          # lint + tests
 .venv/bin/taxidemand config show
 ```
 
+## Getting the data
+
+Raw files come straight from the TLC's official distribution and land under `data/raw/` with
+Hive-style partitions, ready for the lakehouse layers:
+
+```bash
+.venv/bin/taxidemand ingest zones                                   # zone lookup + shapefile
+.venv/bin/taxidemand ingest trips -s yellow -s green --start 2024-01 --end 2024-02
+.venv/bin/taxidemand ingest verify                                  # re-hash against the manifest
+```
+
+```
+data/raw/
+├── manifest.json                       # url, sha256, bytes, row count per file
+├── trips/service=yellow/month=2024-01/yellow_tripdata_2024-01.parquet
+└── zones/{taxi_zone_lookup.csv, taxi_zones.zip, shapes/}
+```
+
+Downloads are parallel, streamed to a temporary file and moved into place atomically, retried
+with exponential backoff on transient errors, and validated (Parquet footer and row count, CSV
+columns, shapefile archive) before they are recorded. Re-running is idempotent; months the TLC has
+not published yet are reported, not treated as failures.
+
 ## Layout
 
 ```
-configs/           pipeline configuration (validated with pydantic)
-src/taxidemand/    package: config, CLI, and pipeline stages as they land
-tests/             unit tests
+configs/                pipeline configuration (validated with pydantic)
+src/taxidemand/
+├── config.py           typed settings
+├── cli.py              `taxidemand` command
+└── ingest/             sources, streaming downloader, manifest, pipeline
+tests/                  unit tests (offline; HTTP is mocked)
 ```
 
 ## License
