@@ -80,6 +80,34 @@ build takes under a second and the report is all warnings, no failures, with zer
 exact row-count matches; the largest finding is that 1.26% of yellow fares are negative (refunds
 and disputes), which the silver layer will handle.
 
+## Silver layer
+
+Silver projects every service onto **one trip schema** (yellow, green and Uber/Lyft trips share the
+same columns, plus derived `duration_s` and `pickup_hour`) and cleans it with two kinds of rule:
+
+- **drop** — records that cannot be a real trip in the partition: pickup outside the month,
+  dropoff not after pickup, trips under a minute or over six hours, unknown zones, negative fares
+  (reversal records for refunds, disputes and voids) and exact duplicates;
+- **nullify** — the trip still happened and still counts as demand, but an implausible attribute
+  (distance over 100 miles, average speed over 80 mph, fare over $1,000) is set to NULL and the
+  rule is recorded in the row's `quality_flags`.
+
+Rejected rows are kept in `silver/_rejects/` with every reason that applied, and each partition is
+reconciled (`bronze rows = kept + rejected`). Bounds live in `lakehouse.cleaning` in the config;
+changing them rebuilds only the affected partitions.
+
+```bash
+.venv/bin/taxidemand silver build -s yellow -s green --start 2024-01 --end 2024-01
+```
+
+| January 2024 | bronze rows | kept | kept % | largest reject reasons |
+|---|---:|---:|---:|---|
+| yellow | 2,964,624 | 2,895,404 | 97.67% | fare reversal 37,448 · under a minute 35,121 · over 6 h 1,772 |
+| green | 56,551 | 54,657 | 96.65% | under a minute 1,620 · over 6 h 198 · fare reversal 182 |
+
+Both months clean in about a second; the full breakdown is written to
+`data/silver/_cleaning/report.md`, and the catalog gains `silver_trips` and `silver_rejects` views.
+
 ## Layout
 
 ```
@@ -88,7 +116,7 @@ src/taxidemand/
 ├── config.py           typed settings
 ├── cli.py              `taxidemand` command
 ├── ingest/             sources, streaming downloader, manifest, pipeline
-└── lakehouse/          schema contracts, bronze build, DuckDB catalog, quality report
+└── lakehouse/          schema contracts, bronze build, silver cleaning, catalog, reports
 tests/                  unit tests (offline; HTTP is mocked, data is synthetic)
 ```
 
