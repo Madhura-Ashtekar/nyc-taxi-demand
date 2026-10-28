@@ -13,6 +13,15 @@ ingest:
   backoff_s: 1.0
   workers: 4                       # parallel downloads
 
+lakehouse:
+  threads: null                    # DuckDB worker threads (null = all cores)
+  memory_limit: 4GB                # DuckDB spills to disk beyond this
+  compression: zstd                # Parquet codec for bronze/silver/gold
+  row_group_size: 122880
+  quality:
+    max_violation_rate: 0.01       # default fail threshold for a rule's violation rate
+    rule_thresholds: {}            # overrides, e.g. {"yellow.fare_non_negative": 0.03}
+
 forecast:
   freq: "1h"
   horizons: [1, 3, 6, 12, 24]      # hours ahead

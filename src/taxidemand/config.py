@@ -68,6 +68,52 @@ class IngestConfig(_Strict):
         return v.rstrip("/")
 
 
+_MEMORY = re.compile(r"^\d+(\.\d+)?\s*(KB|MB|GB|TB|KiB|MiB|GiB|TiB)$")
+
+
+class QualityConfig(_Strict):
+    """Thresholds for the data-quality report.
+
+    A rule with no violations passes; one whose violation rate is within its threshold warns;
+    above it, it fails. Thresholds come from, in order: ``rule_thresholds["service.rule"]``,
+    ``rule_thresholds["rule"]``, the rule's own default in its contract, ``max_violation_rate``.
+    """
+
+    max_violation_rate: float = Field(0.01, ge=0, le=1)
+    rule_thresholds: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("rule_thresholds")
+    @classmethod
+    def _rates(cls, v: dict[str, float]) -> dict[str, float]:
+        bad = {k: r for k, r in v.items() if not 0 <= r <= 1}
+        if bad:
+            raise ValueError(f"thresholds must be within [0, 1]: {bad}")
+        return v
+
+    def threshold(self, service: str, rule: str, default: float | None = None) -> float:
+        for key in (f"{service}.{rule}", rule):
+            if key in self.rule_thresholds:
+                return self.rule_thresholds[key]
+        return self.max_violation_rate if default is None else default
+
+
+class LakehouseConfig(_Strict):
+    """DuckDB engine settings and Parquet layout for the bronze/silver/gold layers."""
+
+    threads: int | None = Field(None, ge=1)  # None: DuckDB uses every core
+    memory_limit: str = "4GB"
+    compression: Literal["zstd", "snappy", "gzip", "uncompressed"] = "zstd"
+    row_group_size: int = Field(122_880, ge=1024)
+    quality: QualityConfig = QualityConfig()
+
+    @field_validator("memory_limit")
+    @classmethod
+    def _memory(cls, v: str) -> str:
+        if not _MEMORY.match(v):
+            raise ValueError(f"memory_limit must look like '4GB' or '512MiB', got {v!r}")
+        return v
+
+
 class ForecastConfig(_Strict):
     freq: str = "1h"
     horizons: list[int] = Field(default_factory=lambda: [1, 6, 24], min_length=1)
@@ -89,6 +135,7 @@ class TrackingConfig(_Strict):
 class Settings(_Strict):
     data: DataConfig
     ingest: IngestConfig = IngestConfig()
+    lakehouse: LakehouseConfig = LakehouseConfig()
     forecast: ForecastConfig = ForecastConfig()
     tracking: TrackingConfig = TrackingConfig()
     seed: int = 42

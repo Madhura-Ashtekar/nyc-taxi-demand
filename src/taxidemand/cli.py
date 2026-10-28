@@ -21,12 +21,16 @@ from taxidemand.ingest import (
     zone_artifacts,
 )
 from taxidemand.ingest.pipeline import MANIFEST_NAME
+from taxidemand.lakehouse import build_bronze, quality_report, write_catalog, write_report
+from taxidemand.lakehouse.quality import QualityReport
 
 app = typer.Typer(help="NYC taxi demand forecasting pipeline.", no_args_is_help=True)
 config_app = typer.Typer(help="Inspect and validate configuration.")
 ingest_app = typer.Typer(help="Download raw TLC trip records and zone reference data.")
+bronze_app = typer.Typer(help="Conform raw files into the bronze layer and check data quality.")
 app.add_typer(config_app, name="config")
 app.add_typer(ingest_app, name="ingest")
+app.add_typer(bronze_app, name="bronze")
 
 _state: dict[str, Settings] = {}
 
@@ -74,27 +78,32 @@ def _finish(report: IngestReport) -> None:
         raise typer.Exit(1)
 
 
+ServiceOpt = Annotated[
+    list[str] | None,
+    typer.Option("--service", "-s", help="Restrict to these services (repeatable)."),
+]
+StartOpt = Annotated[str | None, typer.Option(help="First month, YYYY-MM.")]
+EndOpt = Annotated[str | None, typer.Option(help="Last month, YYYY-MM.")]
+
+
+def _scope(service: list[str] | None, start: str | None, end: str | None) -> DataConfig:
+    """The configured data scope with CLI overrides, re-validated like the config file."""
+    overrides = {"services": service, "start_month": start, "end_month": end}
+    return DataConfig.model_validate(
+        _state["settings"].data.model_dump() | {k: v for k, v in overrides.items() if v}
+    )
+
+
 @ingest_app.command("trips")
 def ingest_trips(
-    service: Annotated[
-        list[str] | None,
-        typer.Option("--service", "-s", help="Restrict to these services (repeatable)."),
-    ] = None,
-    start: Annotated[str | None, typer.Option(help="First month, YYYY-MM.")] = None,
-    end: Annotated[str | None, typer.Option(help="Last month, YYYY-MM.")] = None,
+    service: ServiceOpt = None,
+    start: StartOpt = None,
+    end: EndOpt = None,
     force: Annotated[bool, typer.Option(help="Re-download files already present.")] = False,
 ) -> None:
     """Download monthly trip-record Parquet files into data/raw/trips."""
     s = _state["settings"]
-    # Re-validate overrides through the same model as the config file.
-    data = DataConfig.model_validate(
-        s.data.model_dump()
-        | {
-            k: v
-            for k, v in {"services": service, "start_month": start, "end_month": end}.items()
-            if v
-        }
-    )
+    data = _scope(service, start, end)
     services: list[Service] = data.services
     artifacts = trip_artifacts(s.ingest.base_url, services, data.months())
     typer.echo(f"{len(artifacts)} files: {', '.join(services)} × {len(data.months())} months")
@@ -133,6 +142,72 @@ def ingest_verify() -> None:
     for key, problem in problems.items():
         typer.echo(f"{key}: {problem}", err=True)
     raise typer.Exit(1)
+
+
+def _quality(report: QualityReport, bronze: Path, strict: bool) -> None:
+    js, md = write_report(report, bronze)
+    for p in report.partitions:
+        flagged = [c for c in p.checks if c.status != "pass"]
+        typer.echo(f"{p.service} {p.month}: {p.rows:,} rows, {p.status}")
+        for c in flagged:
+            typer.echo(f"  {c.status:4} {c.name}: {c.violations:,} ({c.rate:.3%})")
+    typer.echo(f"quality {report.status}: {len(report.partitions)} partitions → {md}")
+    if report.status == "fail" or (strict and report.status == "warn"):
+        raise typer.Exit(1)
+
+
+StrictOpt = Annotated[bool, typer.Option(help="Exit non-zero on warnings too.")]
+
+
+@bronze_app.command("build")
+def bronze_build(
+    service: ServiceOpt = None,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    force: Annotated[bool, typer.Option(help="Rebuild partitions that are up to date.")] = False,
+    quality: Annotated[bool, typer.Option(help="Run the quality report afterwards.")] = True,
+    strict: StrictOpt = False,
+) -> None:
+    """Conform raw trip files to their schema contracts as partitioned Parquet."""
+    s = _state["settings"]
+    data = _scope(service, start, end)
+    raw, bronze = data.layer("raw"), data.layer("bronze")
+    report = build_bronze(raw, bronze, data.services, data.months(), s.lakehouse, force=force)
+    typer.echo(report.summary())
+    if report.zones is not None:
+        typer.echo(f"zones: {report.zones} rows")
+    for key, err in report.failed.items():
+        typer.echo(f"  FAILED {key}: {err}", err=True)
+    catalog = write_catalog(bronze, s.lakehouse)
+    typer.echo(f"catalog: {catalog}")
+    if not report.ok:
+        raise typer.Exit(1)
+    if quality:
+        qr = quality_report(bronze, raw, s.lakehouse, services=data.services, months=data.months())
+        _quality(qr, bronze, strict)
+
+
+@bronze_app.command("quality")
+def bronze_quality(
+    service: ServiceOpt = None,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    strict: StrictOpt = False,
+) -> None:
+    """Write the data-quality report for built bronze partitions (JSON + Markdown)."""
+    s = _state["settings"]
+    data = _scope(service, start, end)
+    report = quality_report(
+        data.layer("bronze"),
+        data.layer("raw"),
+        s.lakehouse,
+        services=data.services,
+        months=data.months(),
+    )
+    if not report.partitions:
+        typer.echo("no bronze partitions in scope; run `taxidemand bronze build` first", err=True)
+        raise typer.Exit(1)
+    _quality(report, data.layer("bronze"), strict)
 
 
 if __name__ == "__main__":

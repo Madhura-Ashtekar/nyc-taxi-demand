@@ -16,6 +16,7 @@ Kind = Literal["trips", "zone_lookup", "zone_shapes"]
 TRIP_PATH = "trip-data/{service}_tripdata_{month}.parquet"
 ZONE_LOOKUP_PATH = "misc/taxi_zone_lookup.csv"
 ZONE_SHAPES_PATH = "misc/taxi_zones.zip"
+ZONE_LOOKUP_RELPATH = PurePosixPath("zones", "taxi_zone_lookup.csv")
 
 
 @dataclass(frozen=True)
@@ -33,17 +34,22 @@ class Artifact:
         return self.relpath.as_posix()
 
 
+def trip_relpath(service: str, month: str) -> PurePosixPath:
+    """Location of one raw trip file relative to the raw data directory."""
+    name = f"{service}_tripdata_{month}.parquet"
+    return PurePosixPath("trips", f"service={service}", f"month={month}", name)
+
+
 def trip_artifacts(base_url: str, services: Iterable[str], months: Iterable[str]) -> list[Artifact]:
     """Every (service, month) trip file, ordered by month then service."""
     months, services = list(months), list(services)
     out = []
     for month in months:
         for service in services:
-            name = f"{service}_tripdata_{month}.parquet"
             out.append(
                 Artifact(
                     url=f"{base_url}/{TRIP_PATH.format(service=service, month=month)}",
-                    relpath=PurePosixPath("trips", f"service={service}", f"month={month}", name),
+                    relpath=trip_relpath(service, month),
                     kind="trips",
                     service=service,
                     month=month,
@@ -57,7 +63,7 @@ def zone_artifacts(base_url: str) -> list[Artifact]:
     return [
         Artifact(
             url=f"{base_url}/{ZONE_LOOKUP_PATH}",
-            relpath=PurePosixPath("zones", "taxi_zone_lookup.csv"),
+            relpath=ZONE_LOOKUP_RELPATH,
             kind="zone_lookup",
         ),
         Artifact(
