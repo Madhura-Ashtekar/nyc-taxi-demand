@@ -133,7 +133,9 @@ def conform_sql(contract: Contract, source: Path, columns: list[str]) -> tuple[s
     return sql, {"missing_optional": res.missing_optional, "unexpected": res.unexpected}
 
 
-def _copy(con: duckdb.DuckDBPyConnection, select: str, dest: Path, cfg: LakehouseConfig) -> None:
+def write_parquet(
+    con: duckdb.DuckDBPyConnection, select: str, dest: Path, cfg: LakehouseConfig
+) -> None:
     """Write ``select`` to ``dest`` atomically as one Parquet file."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
@@ -159,7 +161,7 @@ def build_partition(
     source_rows = pq.ParquetFile(source).metadata.num_rows
     select, drift = conform_sql(contract, source, schema.names)
     try:
-        _copy(con, select, dest, cfg)
+        write_parquet(con, select, dest, cfg)
     except duckdb.Error as exc:
         raise ContractError(f"cannot conform to contract: {exc}") from exc
     rows = pq.ParquetFile(dest).metadata.num_rows
@@ -185,7 +187,7 @@ def build_zones(
         "ORDER BY location_id"
     )
     dest = bronze_dir / ZONES_FILE
-    _copy(con, select, dest, cfg)
+    write_parquet(con, select, dest, cfg)
     ids = con.execute(
         f"SELECT count(*), count(DISTINCT location_id), count(location_id) "
         f"FROM read_parquet({literal(dest)})"

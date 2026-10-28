@@ -21,6 +21,12 @@ lakehouse:
   quality:
     max_violation_rate: 0.01       # default fail threshold for a rule's violation rate
     rule_thresholds: {}            # overrides, e.g. {"yellow.fare_non_negative": 0.03}
+  cleaning:                        # silver layer
+    min_trip_seconds: 60           # shorter trips are dropped (cancellations, meter errors)
+    max_trip_hours: 6              # longer trips are dropped (meters left running)
+    max_distance_mi: 100           # beyond this the distance is nulled, the trip kept
+    max_speed_mph: 80              # implied average speed above this nulls the distance
+    max_fare: 1000                 # fares above this are nulled
 
 forecast:
   freq: "1h"

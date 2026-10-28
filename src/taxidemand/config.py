@@ -97,6 +97,22 @@ class QualityConfig(_Strict):
         return self.max_violation_rate if default is None else default
 
 
+class CleaningConfig(_Strict):
+    """Bounds used by the silver layer to drop impossible trips or null implausible values."""
+
+    min_trip_seconds: int = Field(60, ge=0)
+    max_trip_hours: float = Field(6.0, gt=0)
+    max_distance_mi: float = Field(100.0, gt=0)
+    max_speed_mph: float = Field(80.0, gt=0)
+    max_fare: float = Field(1000.0, gt=0)
+
+    @model_validator(mode="after")
+    def _duration_window(self) -> CleaningConfig:
+        if self.min_trip_seconds >= self.max_trip_hours * 3600:
+            raise ValueError("min_trip_seconds must be shorter than max_trip_hours")
+        return self
+
+
 class LakehouseConfig(_Strict):
     """DuckDB engine settings and Parquet layout for the bronze/silver/gold layers."""
 
@@ -105,6 +121,7 @@ class LakehouseConfig(_Strict):
     compression: Literal["zstd", "snappy", "gzip", "uncompressed"] = "zstd"
     row_group_size: int = Field(122_880, ge=1024)
     quality: QualityConfig = QualityConfig()
+    cleaning: CleaningConfig = CleaningConfig()
 
     @field_validator("memory_limit")
     @classmethod

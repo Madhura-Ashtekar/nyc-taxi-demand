@@ -5,12 +5,17 @@ from __future__ import annotations
 import io
 import zipfile
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+
+from taxidemand.ingest.manifest import Manifest, ManifestEntry
+from taxidemand.ingest.pipeline import MANIFEST_NAME
+from taxidemand.ingest.sources import ZONE_LOOKUP_RELPATH, trip_relpath
 
 BASE = "https://tlc.test"
 
@@ -88,3 +93,102 @@ def trips_bytes() -> bytes:
 @pytest.fixture
 def no_sleep() -> Callable[[float], None]:
     return lambda _s: None
+
+
+JAN = datetime(2024, 1, 1)
+
+
+# --- synthetic raw TLC files -------------------------------------------------------------
+
+
+def yellow_rows(n: int = 20) -> list[dict]:
+    """Clean yellow trips: one per hour on 2024-01-01, zones cycling through 1..20."""
+    rows = []
+    for i in range(n):
+        pickup = JAN + timedelta(hours=i)
+        rows.append(
+            {
+                "VendorID": 1 + i % 2,
+                "tpep_pickup_datetime": pickup,
+                "tpep_dropoff_datetime": pickup + timedelta(minutes=12),
+                "passenger_count": 1,
+                "trip_distance": 1.0 + i / 10,
+                "RatecodeID": 1,
+                "store_and_fwd_flag": "N",
+                "PULocationID": 1 + i % 20,
+                "DOLocationID": 2 + i % 20,
+                "payment_type": 1,
+                "fare_amount": 10.0 + i,
+                "extra": 0.5,
+                "mta_tax": 0.5,
+                "tip_amount": 2.0,
+                "tolls_amount": 0.0,
+                "improvement_surcharge": 1.0,
+                "total_amount": 14.0 + i,
+                "congestion_surcharge": 2.5,
+                # The real files spell this one with a capital A.
+                "Airport_fee": 0.0,
+            }
+        )
+    return rows
+
+
+YELLOW_TYPES = {
+    "VendorID": pa.int32(),
+    "tpep_pickup_datetime": pa.timestamp("us"),
+    "tpep_dropoff_datetime": pa.timestamp("us"),
+    "passenger_count": pa.float64(),  # stored as double in the TLC files
+    "trip_distance": pa.float64(),
+    "RatecodeID": pa.float64(),
+    "store_and_fwd_flag": pa.string(),
+    "PULocationID": pa.int32(),
+    "DOLocationID": pa.int32(),
+    "payment_type": pa.int64(),
+}
+
+
+def write_trips(path: Path, rows: list[dict], drop: tuple[str, ...] = ()) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arrays = {}
+    for c in (c for c in rows[0] if c not in drop):
+        values = [r[c] for r in rows]
+        if c in YELLOW_TYPES:
+            arrays[c] = pa.array(values, YELLOW_TYPES[c])
+        elif isinstance(values[0], float):
+            arrays[c] = pa.array(values, pa.float64())
+        else:  # other columns keep their inferred type (strings, ints)
+            arrays[c] = pa.array(values)
+    pq.write_table(pa.table(arrays), path)
+    return len(rows)
+
+
+def fhvhv_rows(n: int = 5) -> list[dict]:
+    return [
+        {
+            "hvfhs_license_num": "HV0003",
+            "dispatching_base_num": "B03404",
+            "request_datetime": JAN + timedelta(hours=i, minutes=-5),
+            "pickup_datetime": JAN + timedelta(hours=i),
+            "dropoff_datetime": JAN + timedelta(hours=i, minutes=20),
+            "PULocationID": 100 + i,
+            "DOLocationID": 200 + i,
+            "trip_miles": 3.0 + i,
+            "trip_time": 1200,
+            "base_passenger_fare": 25.0,
+        }
+        for i in range(n)
+    ]
+
+
+@pytest.fixture
+def lake(tmp_path):
+    """A data root with raw yellow 2024-01 (+ manifest) and the zone lookup."""
+    raw = tmp_path / "raw"
+    rel = trip_relpath("yellow", "2024-01")
+    n = write_trips(raw / rel, yellow_rows())
+    m = Manifest(raw / MANIFEST_NAME)
+    m.record(rel.as_posix(), ManifestEntry("u", "0" * 64, (raw / rel).stat().st_size, "t", n))
+    m.save()
+    (raw / ZONE_LOOKUP_RELPATH).parent.mkdir(parents=True, exist_ok=True)
+    (raw / ZONE_LOOKUP_RELPATH).write_bytes(ZONE_CSV)
+    return raw, tmp_path / "bronze"

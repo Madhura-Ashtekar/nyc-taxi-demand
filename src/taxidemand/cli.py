@@ -21,7 +21,14 @@ from taxidemand.ingest import (
     zone_artifacts,
 )
 from taxidemand.ingest.pipeline import MANIFEST_NAME
-from taxidemand.lakehouse import build_bronze, quality_report, write_catalog, write_report
+from taxidemand.lakehouse import (
+    build_bronze,
+    build_silver,
+    quality_report,
+    write_catalog,
+    write_cleaning_report,
+    write_report,
+)
 from taxidemand.lakehouse.quality import QualityReport
 
 app = typer.Typer(help="NYC taxi demand forecasting pipeline.", no_args_is_help=True)
@@ -31,6 +38,8 @@ bronze_app = typer.Typer(help="Conform raw files into the bronze layer and check
 app.add_typer(config_app, name="config")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(bronze_app, name="bronze")
+silver_app = typer.Typer(help="Clean bronze trips into the unified silver layer.")
+app.add_typer(silver_app, name="silver")
 
 _state: dict[str, Settings] = {}
 
@@ -178,7 +187,7 @@ def bronze_build(
         typer.echo(f"zones: {report.zones} rows")
     for key, err in report.failed.items():
         typer.echo(f"  FAILED {key}: {err}", err=True)
-    catalog = write_catalog(bronze, s.lakehouse)
+    catalog = write_catalog(bronze, s.lakehouse, data.layer("silver"))
     typer.echo(f"catalog: {catalog}")
     if not report.ok:
         raise typer.Exit(1)
@@ -208,6 +217,35 @@ def bronze_quality(
         typer.echo("no bronze partitions in scope; run `taxidemand bronze build` first", err=True)
         raise typer.Exit(1)
     _quality(report, data.layer("bronze"), strict)
+
+
+@silver_app.command("build")
+def silver_build(
+    service: ServiceOpt = None,
+    start: StartOpt = None,
+    end: EndOpt = None,
+    force: Annotated[bool, typer.Option(help="Rebuild partitions that are up to date.")] = False,
+) -> None:
+    """Drop impossible trips, null implausible values and deduplicate, per partition."""
+    s = _state["settings"]
+    data = _scope(service, start, end)
+    bronze, silver = data.layer("bronze"), data.layer("silver")
+    report = build_silver(bronze, silver, data.services, data.months(), s.lakehouse, force=force)
+    typer.echo(report.summary())
+    for p in report.partitions:
+        top = sorted(p.rejected.items(), key=lambda kv: -kv[1])[:3]
+        reasons = ", ".join(f"{name} {n:,}" for name, n in top)
+        typer.echo(
+            f"{p.service} {p.month}: kept {p.rows_kept:,} of {p.rows_in:,} ({p.kept_rate:.2%})"
+            + (f"; top rejects: {reasons}" if reasons else "")
+        )
+    for key, err in report.failed.items():
+        typer.echo(f"  FAILED {key}: {err}", err=True)
+    _, md = write_cleaning_report(report, silver)
+    catalog = write_catalog(bronze, s.lakehouse, silver)
+    typer.echo(f"report: {md}\ncatalog: {catalog}")
+    if not report.ok:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ from taxidemand.lakehouse.contracts import CONTRACTS, UNIFIED_COLUMNS, quote
 
 CATALOG_NAME = "lakehouse.duckdb"
 ZONES_FILE = Path("zones", "taxi_zones.parquet")
+REJECTS_DIR = "_rejects"
+SILVER_VIEWS = {"silver_trips": "trips", "silver_rejects": REJECTS_DIR}
 
 
 def literal(value: str | Path) -> str:
@@ -48,10 +50,14 @@ def present_services(bronze_dir: Path) -> list[str]:
     return [s for s in CONTRACTS if any(service_dir(bronze_dir, s).glob("month=*/*.parquet"))]
 
 
-def register_views(con: duckdb.DuckDBPyConnection, bronze_dir: Path) -> list[str]:
+def register_views(
+    con: duckdb.DuckDBPyConnection, bronze_dir: Path, silver_dir: Path | None = None
+) -> list[str]:
     """Create one view per service, a unified ``trips`` view and ``zones``; return their names.
 
-    Paths are absolute, so a persisted catalog keeps working from any working directory.
+    With ``silver_dir``, cleaned trips and their rejects are exposed as ``silver_trips`` and
+    ``silver_rejects`` (all services, with ``service``/``month`` partition columns). Paths are
+    absolute, so a persisted catalog keeps working from any working directory.
     """
     views, unions = [], []
     for service in present_services(bronze_dir):
@@ -70,10 +76,17 @@ def register_views(con: duckdb.DuckDBPyConnection, bronze_dir: Path) -> list[str
     if zones.exists():
         con.execute(f"CREATE OR REPLACE VIEW zones AS SELECT * FROM read_parquet({literal(zones)})")
         views.append("zones")
+    if silver_dir is not None:
+        for view, sub in SILVER_VIEWS.items():
+            root = silver_dir.resolve() / sub
+            if any(root.glob("service=*/month=*/*.parquet")):
+                glob = root / "service=*" / "month=*" / "*.parquet"
+                con.execute(f"CREATE OR REPLACE VIEW {view} AS SELECT * FROM {scan(glob)}")
+                views.append(view)
     return views
 
 
-def write_catalog(bronze_dir: Path, cfg: LakehouseConfig) -> Path:
+def write_catalog(bronze_dir: Path, cfg: LakehouseConfig, silver_dir: Path | None = None) -> Path:
     """Persist the views in ``bronze_dir/lakehouse.duckdb`` for ad-hoc ``duckdb`` sessions."""
     path = bronze_dir / CATALOG_NAME
     with connect(cfg, path) as con:
@@ -82,5 +95,5 @@ def write_catalog(bronze_dir: Path, cfg: LakehouseConfig) -> Path:
         ).fetchall()
         for (name,) in existing:
             con.execute(f"DROP VIEW {quote(name)}")
-        register_views(con, bronze_dir)
+        register_views(con, bronze_dir, silver_dir)
     return path
