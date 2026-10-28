@@ -58,6 +58,28 @@ with exponential backoff on transient errors, and validated (Parquet footer and 
 columns, shapefile archive) before they are recorded. Re-running is idempotent; months the TLC has
 not published yet are reported, not treated as failures.
 
+## Bronze layer
+
+Raw files are conformed to versioned **schema contracts** (one per service) and written as
+partitioned Parquet with DuckDB. Contracts absorb the TLC's schema drift — column names that change
+case across years, integers stored as doubles, columns added later — so every month unions cleanly.
+Bronze never drops rows: each keeps a `source_row` lineage column and the row count is checked
+against the raw file. Builds are incremental, keyed on the source checksum and contract fingerprint.
+
+```bash
+.venv/bin/taxidemand bronze build -s yellow -s green --start 2024-01 --end 2024-01
+.venv/bin/taxidemand bronze quality --strict          # non-zero exit on warnings too
+duckdb data/bronze/lakehouse.duckdb                   # views: yellow, green, fhvhv, trips, zones
+```
+
+Each build writes a data-quality report (`data/bronze/_quality/report.{md,json}`) covering row-count
+reconciliation, schema drift, null checks, per-service rules (timestamps inside the month, dropoff
+after pickup, valid zone codes, plausible distances and fares) and duplicate detection. A check
+passes, warns within its threshold, or fails. On January 2024 (3,021,175 yellow + green trips) the
+build takes under a second and the report is all warnings, no failures, with zero duplicates and
+exact row-count matches; the largest finding is that 1.26% of yellow fares are negative (refunds
+and disputes), which the silver layer will handle.
+
 ## Layout
 
 ```
@@ -65,8 +87,9 @@ configs/                pipeline configuration (validated with pydantic)
 src/taxidemand/
 ├── config.py           typed settings
 ├── cli.py              `taxidemand` command
-└── ingest/             sources, streaming downloader, manifest, pipeline
-tests/                  unit tests (offline; HTTP is mocked)
+├── ingest/             sources, streaming downloader, manifest, pipeline
+└── lakehouse/          schema contracts, bronze build, DuckDB catalog, quality report
+tests/                  unit tests (offline; HTTP is mocked, data is synthetic)
 ```
 
 ## License

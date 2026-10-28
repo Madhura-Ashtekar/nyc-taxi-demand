@@ -7,7 +7,7 @@ probabilistic & hierarchical forecasts → served, monitored model.
 ## Phase 1 — Data foundation
 - [x] 1. Project scaffold: package layout, typed config, CLI, CI, lint/test tooling
 - [x] 2. Ingestion: TLC trip-record downloader (yellow, green, FHVHV) with retries, manifest and checksums; taxi-zone lookup + shapefile
-- [ ] 3. Bronze layer: partitioned Parquet in DuckDB, schema contracts and a data-quality report
+- [x] 3. Bronze layer: partitioned Parquet in DuckDB, schema contracts and a data-quality report
 - [ ] 4. Silver layer: cleaning rules (impossible durations/distances/fares, out-of-period timestamps, duplicates) with tests
 - [ ] 5. Gold layer: zone × hour demand panel with zero-filling; DuckDB vs Polars benchmark
 - [ ] 6. Exploratory analysis: seasonality, holidays, spatial heatmaps, service-mix shifts
